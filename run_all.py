@@ -67,13 +67,13 @@ def main():
     stages = [
         {
             'name': 'Stage 1: Sentiment Classifier Training',
-            'cmd': 'cd training && python train_sentiment.py && cd ..',
-            'time_est': '~30 min (GPU) / ~3 hours (CPU)'
+            'cmd': 'python training/train_sentiment.py',
+            'time_est': '~1.5 hours (M2 GPU with MPS)'
         },
         {
             'name': 'Stage 2: Autoencoder Training',
-            'cmd': 'cd training && python train_autoencoder.py && cd ..',
-            'time_est': '~20 min (GPU) / ~2 hours (CPU)'
+            'cmd': 'python training/train_autoencoder.py',
+            'time_est': '~30 min (M2 GPU with MPS)'
         },
         {
             'name': 'Optimizer Comparison Analysis',
