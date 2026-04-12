@@ -1,9 +1,3 @@
-# Virtual Environment
-venv/
-env/
-ENV/
-.venv
-
 # Python
 __pycache__/
 *.py[cod]
@@ -26,10 +20,10 @@ wheels/
 .installed.cfg
 *.egg
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
+# Virtual Environment
+venv/
+ENV/
+env/
 
 # IDE
 .vscode/
@@ -39,11 +33,37 @@ htmlcov/
 *~
 .DS_Store
 
-# Models & Data
-reviewguard/models/saved/
-reviewguard/data/*.csv
-reviewguard/*.json
-reviewguard/experiments/outputs/
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data
+data/amazon_reviews_train.csv
+data/mexwell_reviews.csv
+
+# Model weights
+models/saved/*.pt
+models/saved/*.pkl
+
+# Training outputs
+models/saved/confusion_matrix_*.png
+models/saved/training_log_*.json
+models/saved/*_comparison_*.png
+models/saved/*_comparison_*.html
+models/saved/optimizer_*.png
+models/saved/optimizer_*.html
+models/saved/regularization_*.png
+models/saved/regularization_*.html
+models/saved/roc_*.png
+models/saved/reconstruction_*.png
+
+# Streamlit
+.streamlit/
+*.streamlit.secrets
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Logs
 *.log
