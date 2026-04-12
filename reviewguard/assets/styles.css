@@ -1,0 +1,482 @@
+/* ReviewGuard Custom Stylesheet */
+/* Dark theme with electric indigo accent */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+    --bg-primary: #0F0F13;
+    --bg-secondary: #1A1A24;
+    --bg-tertiary: #2A2A3A;
+    --accent-primary: #6366F1;
+    --accent-dark: #4F46E5;
+    --text-primary: #F3F4F6;
+    --text-secondary: #D1D5DB;
+    --text-muted: #9CA3AF;
+    --success: #10B981;
+    --warning: #F59E0B;
+    --danger: #F43F5E;
+    --border: #2A2A3A;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* GLOBAL STYLES */
+/* ─────────────────────────────────────────────────────────── */
+
+* {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    background-image: 
+        radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.08) 0.5px, transparent 0.5px);
+    background-size: 30px 30px;
+}
+
+/* Hide Streamlit branding */
+footer {
+    display: none;
+}
+
+.reportview-container::before {
+    content: '';
+}
+
+/* Remove hamburger menu and footer */
+.stMainBlockContainer {
+    padding-top: 2rem;
+}
+
+/* Hide "Made with Streamlit" footer */
+footer::after {
+    content: '';
+    display: none;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* MAIN CONTAINER */
+/* ─────────────────────────────────────────────────────────── */
+
+.main {
+    background-color: var(--bg-primary);
+}
+
+.block-container {
+    background-color: transparent;
+    padding: 2rem 3rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+    .block-container {
+        padding: 1rem;
+    }
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* TEXT INPUTS & TEXTAREAS */
+/* ─────────────────────────────────────────────────────────── */
+
+textarea {
+    background-color: #13131A !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}
+
+textarea:focus {
+    background-color: #13131A !important;
+    border-color: var(--accent-primary) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1) !important;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"] {
+    background-color: #13131A !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+}
+
+input:focus {
+    border-color: var(--accent-primary) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* SELECT BOXES */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="select"] {
+    --parent_bg_color: #13131A;
+}
+
+[data-baseweb="select"] div {
+    background-color: #13131A !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+}
+
+[data-baseweb="menu"] {
+    background-color: var(--bg-secondary) !important;
+    border: 1px solid var(--border) !important;
+}
+
+[data-baseweb="menu"] li {
+    background-color: transparent !important;
+}
+
+[data-baseweb="menu"] li:hover {
+    background-color: rgba(99, 102, 241, 0.1) !important;
+}
+
+[data-baseweb="menu"] li[aria-selected="true"] {
+    background-color: rgba(99, 102, 241, 0.2) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* BUTTONS */
+/* ─────────────────────────────────────────────────────────── */
+
+button {
+    background-color: var(--accent-primary) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    padding: 10px 20px !important;
+    transition: all 0.2s ease !important;
+}
+
+button:hover {
+    background-color: var(--accent-dark) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3) !important;
+}
+
+button:active {
+    transform: scale(0.98);
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* SLIDERS */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="slider"] div {
+    background-color: transparent !important;
+}
+
+[data-baseweb="slider"] input {
+    background-color: transparent !important;
+}
+
+[data-baseweb="slider"] {
+    --slider_track_background_color: var(--border);
+    --slider_track_filled_color: var(--accent-primary);
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* RADIO BUTTONS & CHECKBOXES */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="radio"] label,
+[data-baseweb="checkbox"] label {
+    color: var(--text-primary) !important;
+}
+
+[data-baseweb="radio"] input,
+[data-baseweb="checkbox"] input {
+    accent-color: var(--accent-primary) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* METRICS & STATS */
+/* ─────────────────────────────────────────────────────────── */
+
+.metric-container {
+    background-color: var(--bg-secondary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    padding: 1.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* TABS */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="tab-list"],
+[data-baseweb="tab"] {
+    background-color: transparent !important;
+}
+
+[data-baseweb="tab"] button {
+    background-color: transparent !important;
+    border: none !important;
+    border-bottom: 2px solid transparent !important;
+    color: var(--text-secondary) !important;
+    padding: 12px 24px !important;
+    transition: all 0.2s ease !important;
+}
+
+[data-baseweb="tab"] button:hover {
+    background-color: transparent !important;
+    border-bottom-color: var(--accent-primary) !important;
+    color: var(--text-primary) !important;
+}
+
+[aria-selected="true"] {
+    border-bottom-color: var(--accent-primary) !important;
+    color: var(--accent-primary) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* SCROLLBAR */
+/* ─────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--accent-primary);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-dark);
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* DATAFRAME & TABLE */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="table"] {
+    background-color: var(--bg-secondary) !important;
+}
+
+[data-baseweb="table"] table {
+    background-color: var(--bg-secondary) !important;
+}
+
+[data-baseweb="table"] tr {
+    background-color: transparent !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+
+[data-baseweb="table"] tr:nth-child(even) {
+    background-color: rgba(99, 102, 241, 0.03) !important;
+}
+
+[data-baseweb="table"] th {
+    background-color: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+}
+
+[data-baseweb="table"] td {
+    color: var(--text-primary) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* EXPANDER */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-baseweb="expander"] button {
+    background-color: var(--bg-secondary) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    padding: 12px 16px !important;
+}
+
+[data-baseweb="expander"] button:hover {
+    background-color: rgba(99, 102, 241, 0.1) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* SIDEBAR */
+/* ─────────────────────────────────────────────────────────── */
+
+[data-testid="stSidebar"] {
+    background-color: var(--bg-secondary) !important;
+    border-right: 1px solid var(--border) !important;
+}
+
+[data-testid="stSidebar"] section {
+    background-color: transparent !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* HEADINGS */
+/* ─────────────────────────────────────────────────────────── */
+
+h1, h2, h3, h4, h5, h6 {
+    color: var(--text-primary) !important;
+    font-weight: 700 !important;
+}
+
+h1 {
+    font-size: 32px !important;
+    letter-spacing: -0.02em !important;
+}
+
+h2 {
+    font-size: 24px !important;
+    margin-top: 2rem !important;
+    margin-bottom: 1rem !important;
+}
+
+h3 {
+    font-size: 18px !important;
+    margin-top: 1.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* TEXT & LINKS */
+/* ─────────────────────────────────────────────────────────── */
+
+p {
+    color: var(--text-secondary) !important;
+    line-height: 1.6 !important;
+}
+
+a {
+    color: var(--accent-primary) !important;
+    text-decoration: none !important;
+    transition: all 0.2s ease !important;
+}
+
+a:hover {
+    color: var(--accent-dark) !important;
+    text-decoration: underline !important;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* CUSTOM COMPONENTS */
+/* ─────────────────────────────────────────────────────────── */
+
+.card {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.pill {
+    display: inline-block;
+    background-color: rgba(99, 102, 241, 0.1);
+    color: var(--accent-primary);
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    margin-right: 8px;
+    margin-bottom: 8px;
+}
+
+.badge-success {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: var(--success);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge-warning {
+    background-color: rgba(245, 158, 11, 0.1);
+    color: var(--warning);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge-danger {
+    background-color: rgba(244, 63, 94, 0.1);
+    color: var(--danger);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* ANIMATIONS */
+/* ─────────────────────────────────────────────────────────── */
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.fade-in {
+    animation: fadeIn 0.3s ease-out;
+}
+
+.slide-in {
+    animation: slideIn 0.3s ease-out;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/* RESPONSIVE */
+/* ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+    .block-container {
+        padding: 1rem;
+    }
+    
+    h1 {
+        font-size: 24px;
+    }
+    
+    h2 {
+        font-size: 20px;
+    }
+    
+    button {
+        width: 100%;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}

@@ -1,0 +1,69 @@
+═══════════════════════════════════════════════════════════
+DATASET DOWNLOAD INSTRUCTIONS
+═══════════════════════════════════════════════════════════
+
+STAGE 1 - SENTIMENT CLASSIFIER TRAINING
+═══════════════════════════════════════════════════════════
+
+Dataset: Amazon Reviews (bittlingmayer/amazon-reviews)
+Source: https://github.com/bittlingmayer/char-cnn-classification
+Format: CSV files for sentiment classification
+
+Download instructions:
+1. Clone or download the repository:
+   git clone https://github.com/bittlingmayer/char-cnn-classification.git
+
+2. Navigate to the data/amazon_review_full directory
+
+3. You'll find:
+   - train.csv (3.6M reviews)
+   - test.csv (400K reviews)
+
+4. Copy train.csv to: reviewguard/data/amazon_reviews_train.csv
+
+5. The CSV format is:
+   - Column 1: Star rating (1-5)
+   - Column 2: Review text
+
+Note: The training script will filter to stars 1,2,4,5 and skip 3
+(ambiguous). It will sample 200K reviews (100K positive, 100K negative)
+for manageable training time.
+
+
+STAGE 2 - FAKE REVIEW DETECTION TRAINING
+═══════════════════════════════════════════════════════════
+
+Dataset: mexwell Fake Reviews (mexwell deceptive opinion spam)
+Source: http://myle.us/deceptive-opinion-spam-corpus-11/
+
+Download instructions:
+1. Access the dataset from the link above
+2. Look for the compressed dataset file
+3. Extract it to get directories and files
+4. Look for files labeled with review content and labels:
+   - 'OR' = Genuine (original/truthful review)
+   - 'YP' = Fake (deceptive opinion spam)
+
+5. Convert to CSV with columns: review_text, label
+6. Save as: reviewguard/data/mexwell_reviews.csv
+
+Expected format:
+   review_text,label
+   "This product is amazing!...",OR
+   "Fake positive spam...",YP
+
+If you cannot download the datasets:
+- Training scripts include a DEMO_DATA flag
+- Set to True to generate synthetic data for testing
+- Models will train but with demonstration data
+
+
+OPTIONAL: SAMPLE SYNTHETIC DATA FOR TESTING
+═══════════════════════════════════════════════════════════
+
+If datasets are unavailable, the training scripts can generate
+synthetic data. Set DATA_MODE = 'synthetic' in the training config.
+
+This will create fake reviews for demonstration purposes only.
+Models trained on synthetic data will be for UI demonstration 
+only and should not be used for real inference.

@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data
+data/amazon_reviews_train.csv
+data/mexwell_reviews.csv
+
+# Model weights
+models/saved/*.pt
+models/saved/*.pkl
+
+# Training outputs
+models/saved/confusion_matrix_*.png
+models/saved/training_log_*.json
+models/saved/*_comparison_*.png
+models/saved/*_comparison_*.html
+models/saved/optimizer_*.png
+models/saved/optimizer_*.html
+models/saved/regularization_*.png
+models/saved/regularization_*.html
+models/saved/roc_*.png
+models/saved/reconstruction_*.png
+
+# Streamlit
+.streamlit/
+*.streamlit.secrets
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
