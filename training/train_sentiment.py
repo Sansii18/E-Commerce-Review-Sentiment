@@ -18,8 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, random_split
-from torch.cuda.amp import autocast, GradScaler
+from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -27,18 +26,23 @@ import json
 from tqdm import tqdm
 import time
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 from utils.preprocessing import TextPreprocessor
 from models.sentiment_model import SentimentLSTM
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / 'data'
+MODEL_DIR = PROJECT_ROOT / 'models' / 'saved'
+
 # ═════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═════════════════════════════════════════════════════════════
 
 CONFIG = {
-    'data_mode': 'synthetic',  # 'real' or 'synthetic' (real requires amazon dataset)
+    'data_mode': 'real',  # Falls back to synthetic if the dataset is unavailable
     'max_samples': 200000,  # 100K positive + 100K negative
     'max_vocab': 20000,
     'max_len': 200,  # 95th percentile of review lengths
@@ -59,7 +63,6 @@ CONFIG = {
         'early_stopping_patience': 5,  # Increased from 3 to allow recovery
         'gradient_clip': 1.0,  # Prevent gradient explosion
         'warmup_epochs': 1  # Stabilize first epoch
-    },
     },
     'mixed_precision': True,  # Enable for M2 GPU
     'device': (
@@ -91,7 +94,7 @@ def generate_synthetic_sentiment_data(num_samples: int = 200000) -> pd.DataFrame
     negative_words = [
         'terrible', 'awful', 'bad', 'horrible', 'waste', 'poor', 'disappointing',
         'broken', 'defective', 'useless', 'disaster', 'regret', 'avoid',
-        'overpriced', 'cheap', 'quality'
+        'overpriced', 'cheap', 'refund'
     ]
     
     phrases = [
@@ -135,7 +138,7 @@ def load_sentiment_data(config: dict) -> pd.DataFrame:
     """
     if config['data_mode'] == 'real':
         # Load real Amazon Reviews
-        data_path = Path('data/amazon_reviews_train.csv')
+        data_path = DATA_DIR / 'amazon_reviews_train.csv'
         if not data_path.exists():
             print(f"⚠ Dataset not found at {data_path}")
             print("Falling back to synthetic data for demonstration...")
@@ -177,7 +180,7 @@ class SentimentTrainer:
         self,
         model: SentimentLSTM,
         train_loader: DataLoader,
-        loss_fn: nn.BCELoss,
+        loss_fn: nn.Module,
         optimizer: optim.Optimizer,
         l1_factor: float = 0.0
     ) -> Tuple[float, float]:
@@ -204,10 +207,11 @@ class SentimentTrainer:
             labels = labels.to(self.device).float()
             
             # Forward pass
-            predictions, _ = model(token_ids)
+            logits, _ = model.forward_logits(token_ids)
+            predictions = torch.sigmoid(logits)
             
             # Compute loss
-            loss = loss_fn(predictions, labels)
+            loss = loss_fn(logits, labels)
             
             # Add L1 regularization if specified
             if l1_factor > 0:
@@ -221,7 +225,10 @@ class SentimentTrainer:
             loss.backward()
             
             # Gradient clipping to prevent explosion
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=self.config['regularization']['gradient_clip']
+            )
             
             optimizer.step()
             
@@ -238,7 +245,7 @@ class SentimentTrainer:
         self,
         model: SentimentLSTM,
         val_loader: DataLoader,
-        loss_fn: nn.BCELoss
+        loss_fn: nn.Module
     ) -> Tuple[float, float]:
         """
         Validate model on validation set.
@@ -253,8 +260,9 @@ class SentimentTrainer:
                 token_ids = token_ids.to(self.device)
                 labels = labels.to(self.device).float()
                 
-                predictions, _ = model(token_ids)
-                loss = loss_fn(predictions, labels)
+                logits, _ = model.forward_logits(token_ids)
+                predictions = torch.sigmoid(logits)
+                loss = loss_fn(logits, labels)
                 
                 total_loss += loss.item()
                 all_preds.extend((predictions > 0.5).cpu().numpy())
@@ -311,7 +319,7 @@ class SentimentTrainer:
         else:
             raise ValueError(f"Unknown optimizer: {optimizer_name}")
         
-        loss_fn = nn.BCELoss()
+        loss_fn = nn.BCEWithLogitsLoss()
         
         # Early stopping
         best_val_loss = float('inf')
@@ -366,7 +374,7 @@ class SentimentTrainer:
                 patience_counter = 0
                 # Save best model
                 model.save_model(
-                    f'models/saved/sentiment_model_{optimizer_name}_best.pt',
+                    str(MODEL_DIR / f'sentiment_model_{optimizer_name}_best.pt'),
                     config=self.config,
                     best_val_accuracy=best_val_accuracy
                 )
@@ -439,7 +447,7 @@ def plot_confusion_matrix(y_true, y_pred, title: str = "Sentiment Classification
     plt.tight_layout()
     
     # Save
-    save_path = Path('models/saved/confusion_matrix_sentiment.png')
+    save_path = MODEL_DIR / 'confusion_matrix_sentiment.png'
     save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"↳ Confusion matrix saved to {save_path}")
@@ -487,8 +495,8 @@ def main():
     print(f"Vocabulary size: {preprocessor.vocab_size}")
     
     # Save vocabulary
-    vocab_path = Path('models/saved/vocabulary.pkl')
-    vocab_path.parent.mkdir(parents=True, exist_ok=True)
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    vocab_path = MODEL_DIR / 'vocabulary.pkl'
     preprocessor.save_vocabulary(str(vocab_path))
     print(f"✓ Vocabulary saved")
     
@@ -504,21 +512,26 @@ def main():
     
     print(f"Data shape: {X.shape}")
     
-    # Split data 80/10/10
-    print("\n✂️ Splitting data (80/10/10)...")
-    dataset = TensorDataset(
-        torch.LongTensor(X),
-        torch.LongTensor(y)
+    # Split data 80/10/10 with stratification so class balance remains stable.
+    print("\n✂️ Splitting data (80/10/10, stratified)...")
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y
     )
-    
-    train_size = int(0.8 * len(dataset))
-    val_size = int(0.1 * len(dataset))
-    test_size = len(dataset) - train_size - val_size
-    
-    train_data, val_data, test_data = random_split(
-        dataset, [train_size, val_size, test_size],
-        generator=torch.Generator().manual_seed(42)
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp,
+        y_temp,
+        test_size=0.5,
+        random_state=42,
+        stratify=y_temp
     )
+
+    train_data = TensorDataset(torch.LongTensor(X_train), torch.LongTensor(y_train))
+    val_data = TensorDataset(torch.LongTensor(X_val), torch.LongTensor(y_val))
+    test_data = TensorDataset(torch.LongTensor(X_test), torch.LongTensor(y_test))
     
     train_loader = DataLoader(train_data, batch_size=CONFIG['batch_size'], shuffle=True)
     val_loader = DataLoader(val_data, batch_size=CONFIG['batch_size'])
@@ -538,7 +551,7 @@ def main():
     
     for optimizer_name in ['adam', 'sgd', 'rmsprop']:
         model = SentimentLSTM(
-            vocab_size=CONFIG['max_vocab'] + 1,
+            vocab_size=preprocessor.vocab_size,
             embedding_dim=CONFIG['embedding_dim'],
             hidden_dim=CONFIG['hidden_dim'],
             num_layers=CONFIG['num_layers'],
@@ -550,7 +563,7 @@ def main():
         
         if log['best_val_accuracy'] > best_accuracy:
             best_accuracy = log['best_val_accuracy']
-            best_model_path = f'models/saved/sentiment_model_{optimizer_name}_best.pt'
+            best_model_path = str(MODEL_DIR / f'sentiment_model_{optimizer_name}_best.pt')
     
     # Evaluate best model
     print("\n" + "="*60)
@@ -570,7 +583,7 @@ def main():
     
     # Save training log
     print("\n💾 Saving training logs...")
-    log_path = Path('models/saved/training_log_sentiment.json')
+    log_path = MODEL_DIR / 'training_log_sentiment.json'
     with open(log_path, 'w') as f:
         # Convert to serializable format
         serializable_logs = {}

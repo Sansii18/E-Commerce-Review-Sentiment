@@ -123,15 +123,17 @@ class TextPreprocessor:
             raise ValueError("Vocabulary not built. Call build_vocabulary() first.")
         
         words = text.split()
-        
+
+        # Reserve room for sequence boundary tokens. These help both the
+        # classifier and the autoencoder learn clearer sentence structure.
+        max_content_len = max(max_len - 2, 0)
+        words = words[:max_content_len]
+
         # Convert words to indices
-        indices = []
+        indices = [self.word2idx['<START>']]
         for word in words:
-            if word in self.word2idx:
-                indices.append(self.word2idx[word])
-            else:
-                # Use <UNK> for out-of-vocabulary words
-                indices.append(self.word2idx['<UNK>'])
+            indices.append(self.word2idx.get(word, self.word2idx['<UNK>']))
+        indices.append(self.word2idx['<END>'])
         
         # Truncate if longer than max_len
         if len(indices) > max_len:

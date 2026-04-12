@@ -61,7 +61,11 @@ CONFIG = {
     'max_len': 200,
     'embedding_dim': 128,
     'hidden_dim': 256,
-    'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+    'device': (
+        'mps' if torch.backends.mps.is_available() else (
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+    )
 }
 
 # Demo reviews with pre-computed scores
@@ -148,14 +152,14 @@ def load_models():
             )
             
             # Load autoencoder and threshold
-            checkpoint = torch.load('models/saved/autoencoder_checkpoint.pt')
-            autoencoder_model = ReviewAutoencoder(
-                vocab_size=CONFIG['max_vocab'] + 1,
-                embedding_dim=CONFIG['embedding_dim'],
-                hidden_dim=128
-            ).to(CONFIG['device'])
-            autoencoder_model.load_state_dict(checkpoint['model_state_dict'])
-            autoencoder_model.eval()
+            checkpoint = torch.load(
+                'models/saved/autoencoder_checkpoint.pt',
+                map_location=CONFIG['device']
+            )
+            autoencoder_model = ReviewAutoencoder.load_model(
+                'models/saved/autoencoder_checkpoint.pt',
+                device=CONFIG['device']
+            )
             threshold = checkpoint['threshold']
             
             # Load vocabulary

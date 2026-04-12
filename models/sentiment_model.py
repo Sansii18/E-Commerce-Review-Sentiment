@@ -41,7 +41,11 @@ class Attention(nn.Module):
         super().__init__()
         self.attention = nn.Linear(hidden_dim, 1)
     
-    def forward(self, lstm_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        lstm_output: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute attention weights over sequence.
         
@@ -56,6 +60,10 @@ class Attention(nn.Module):
         scores = self.attention(lstm_output)  # (batch_size, seq_len, 1)
         scores = scores.squeeze(-1)  # (batch_size, seq_len)
         
+        # Prevent the model from attending to padding tokens.
+        if mask is not None:
+            scores = scores.masked_fill(~mask.bool(), torch.finfo(scores.dtype).min)
+
         # Normalize with softmax
         attention_weights = F.softmax(scores, dim=1)  # (batch_size, seq_len)
         
@@ -134,8 +142,57 @@ class SentimentLSTM(nn.Module):
         self.fc1 = nn.Linear(lstm_output_dim, 64)
         self.fc2 = nn.Linear(64, 1)
         self.relu = nn.ReLU()
+        self.fc_dropout = nn.Dropout(dropout)
         self.sigmoid = nn.Sigmoid()
-    
+
+    def forward_logits(
+        self,
+        token_ids: torch.Tensor,
+        return_attention: bool = False
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass that returns raw logits for numerically stable training.
+        """
+        # Track which tokens are real words so padding does not affect the LSTM
+        # state or the attention distribution.
+        padding_mask = token_ids.ne(0)
+
+        # Guard against fully empty inputs after preprocessing.
+        if not padding_mask.all(dim=1).all():
+            padding_mask = padding_mask.clone()
+            empty_rows = padding_mask.sum(dim=1) == 0
+            padding_mask[empty_rows, 0] = True
+
+        lengths = padding_mask.sum(dim=1).cpu()
+
+        # Embed tokens
+        embedded = self.embedding(token_ids)  # (batch, seq_len, embedding_dim)
+
+        packed = nn.utils.rnn.pack_padded_sequence(
+            embedded,
+            lengths,
+            batch_first=True,
+            enforce_sorted=False
+        )
+        packed_output, _ = self.lstm(packed)
+        lstm_output, _ = nn.utils.rnn.pad_packed_sequence(
+            packed_output,
+            batch_first=True,
+            total_length=token_ids.size(1)
+        )
+
+        # Apply attention
+        context, attention_weights = self.attention(lstm_output, mask=padding_mask)
+
+        # Classification head
+        x = self.relu(self.fc1(context))
+        x = self.fc_dropout(x)
+        logits = self.fc2(x).squeeze(-1)
+
+        if return_attention:
+            return logits, attention_weights
+        return logits, None
+
     def forward(
         self,
         token_ids: torch.Tensor,
@@ -152,21 +209,12 @@ class SentimentLSTM(nn.Module):
             prediction: Tensor of shape (batch_size,) with probabilities 0-1
             attention_weights: (batch_size, seq_len) if return_attention=True
         """
-        # Embed tokens
-        embedded = self.embedding(token_ids)  # (batch, seq_len, embedding_dim)
-        
-        # Pass through LSTM
-        lstm_output, (hidden, cell) = self.lstm(embedded)  # lstm_output: (batch, seq_len, hidden)
-        
-        # Apply attention
-        context, attention_weights = self.attention(lstm_output)
-        
-        # Classification head
-        x = self.relu(self.fc1(context))
-        x = self.dropout(x) if hasattr(self, 'dropout') else x
-        logits = self.fc2(x)
-        prediction = self.sigmoid(logits).squeeze(-1)
-        
+        logits, attention_weights = self.forward_logits(
+            token_ids,
+            return_attention=return_attention
+        )
+        prediction = self.sigmoid(logits)
+
         if return_attention:
             return prediction, attention_weights
         else:

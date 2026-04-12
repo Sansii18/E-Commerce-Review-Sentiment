@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -32,14 +32,19 @@ from sklearn.metrics import f1_score, precision_score, recall_score, roc_curve, 
 from utils.preprocessing import TextPreprocessor
 from models.autoencoder_model import ReviewAutoencoder
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / 'data'
+MODEL_DIR = PROJECT_ROOT / 'models' / 'saved'
+
 # ═════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═════════════════════════════════════════════════════════════
 
 CONFIG = {
-    'data_mode': 'synthetic',  # 'real' or 'synthetic'
+    'data_mode': 'real',  # Falls back to synthetic if the dataset is unavailable
     'genuine_samples': 18000,  # Genuine reviews for training
     'validation_samples': 2000,  # Genuine reviews for calibration
+    'calibration_fake_samples': 2000,  # Fake reviews used only for threshold calibration
     'test_samples': 5000,  # Mix of genuine + fake for testing
     'max_vocab': 20000,
     'max_len': 200,
@@ -63,14 +68,14 @@ CONFIG = {
 # DATA GENERATION
 # ═════════════════════════════════════════════════════════════
 
-def generate_synthetic_fake_reviews(num_genuine: int, num_fake: int) -> Tuple[np.ndarray, np.ndarray]:
+def generate_synthetic_reviews(
+    num_samples: int,
+    review_type: str,
+    rng: np.random.Generator
+) -> np.ndarray:
     """
-    Generate synthetic reviews for demonstration.
-    
-    In production, uses mexwell dataset with 'OR' (genuine) and 'YP' (fake) labels.
+    Generate synthetic review text for demonstration.
     """
-    np.random.seed(42)
-    
     # Genuine reviews: natural, coherent language
     genuine_phrases = [
         "This product works exactly as advertised, very happy with my purchase.",
@@ -95,89 +100,97 @@ def generate_synthetic_fake_reviews(num_genuine: int, num_fake: int) -> Tuple[np
         "Fake review flag word patterns test test test"
     ]
     
-    reviews = []
-    labels = []
-    
-    # Generate genuine
-    for _ in range(num_genuine):
-        review = np.random.choice(genuine_phrases)
-        reviews.append(review)
-        labels.append(0)  # 0 = genuine
-    
-    # Generate fake
-    for _ in range(num_fake):
-        review = np.random.choice(fake_phrases)
-        reviews.append(review)
-        labels.append(1)  # 1 = fake
-    
-    return np.array(reviews), np.array(labels)
+    phrases = genuine_phrases if review_type == 'genuine' else fake_phrases
+    return np.array([rng.choice(phrases) for _ in range(num_samples)])
 
 
-def load_fake_review_data(config: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def load_fake_review_data(
+    config: dict
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load fake review data or generate synthetic.
     
     Returns:
-        (genuine_reviews, validation_genuine, test_reviews, test_labels)
+        (train_genuine, validation_genuine, calibration_fake, test_reviews, test_labels)
     """
     if config['data_mode'] == 'real':
         # Load mexwell Fake Reviews dataset
-        data_path = Path('data/mexwell_reviews.csv')
+        data_path = DATA_DIR / 'mexwell_reviews.csv'
         if not data_path.exists():
             print(f"⚠ Dataset not found at {data_path}")
             print("Falling back to synthetic data...")
-            num_gen = config['genuine_samples'] + config['validation_samples']
-            num_fake_test = config['test_samples'] // 2
-            gen_all, _ = generate_synthetic_fake_reviews(num_gen, num_fake_test)
-            fake_test, _ = generate_synthetic_fake_reviews(0, num_fake_test)
-            
-            # Split genuine into train and val
-            train_genuine = gen_all[:config['genuine_samples']]
-            val_genuine = gen_all[config['genuine_samples']:]
-            
-            # Create test set: half genuine, half fake
-            test_gen, _ = generate_synthetic_fake_reviews(num_fake_test, 0)
-            test_reviews = np.concatenate([test_gen, fake_test])
-            test_labels = np.concatenate([np.zeros(num_fake_test), np.ones(num_fake_test)])
-            
-            return train_genuine, val_genuine, test_reviews, test_labels
-        
-        df = pd.read_csv(data_path)
-        genuine = df[df['label'] == 'OR']['review_text'].values
-        fake = df[df['label'] == 'YP']['review_text'].values
-        
-    else:
-        # Generate synthetic data
-        num_gen = config['genuine_samples'] + config['validation_samples']
-        num_fake_test = config['test_samples'] // 2
-        genuine_all, _ = generate_synthetic_fake_reviews(num_gen, 0)
-        _, fake_all = generate_synthetic_fake_reviews(0, num_gen)
-        
-        genuine = genuine_all
-        fake = fake_all
-    
-    # Split genuine into train and validation
-    train_genuine = genuine[:config['genuine_samples']]
-    val_genuine = genuine[config['genuine_samples']:config['genuine_samples'] + config['validation_samples']]
-    
-    # Create test set: half genuine, half fake (balanced)
+            config = {**config, 'data_mode': 'synthetic'}
+        else:
+            df = pd.read_csv(data_path)
+            genuine = df[df['label'] == 'OR']['review_text'].astype(str).values
+            fake = df[df['label'] == 'YP']['review_text'].astype(str).values
+
+            required_genuine = config['genuine_samples'] + config['validation_samples'] + (config['test_samples'] // 2)
+            required_fake = config['calibration_fake_samples'] + (config['test_samples'] // 2)
+
+            if len(genuine) < required_genuine or len(fake) < required_fake:
+                raise ValueError(
+                    "Not enough real reviews to satisfy the configured train/validation/test split."
+                )
+
+            rng = np.random.default_rng(42)
+            genuine = genuine[rng.permutation(len(genuine))]
+            fake = fake[rng.permutation(len(fake))]
+
+            train_genuine = genuine[:config['genuine_samples']]
+            val_genuine = genuine[
+                config['genuine_samples']:config['genuine_samples'] + config['validation_samples']
+            ]
+            test_size_each = config['test_samples'] // 2
+            test_genuine = genuine[
+                config['genuine_samples'] + config['validation_samples']:
+                config['genuine_samples'] + config['validation_samples'] + test_size_each
+            ]
+
+            calibration_fake = fake[:config['calibration_fake_samples']]
+            test_fake = fake[
+                config['calibration_fake_samples']:
+                config['calibration_fake_samples'] + test_size_each
+            ]
+
+            test_reviews = np.concatenate([test_genuine, test_fake])
+            test_labels = np.concatenate([
+                np.zeros(test_size_each, dtype=int),
+                np.ones(test_size_each, dtype=int)
+            ])
+
+            shuffle_idx = rng.permutation(len(test_reviews))
+            return (
+                train_genuine,
+                val_genuine,
+                calibration_fake,
+                test_reviews[shuffle_idx],
+                test_labels[shuffle_idx]
+            )
+
+    # Synthetic fallback
+    rng = np.random.default_rng(42)
     test_size_each = config['test_samples'] // 2
-    test_genuine = genuine[config['genuine_samples'] + config['validation_samples']:
-                          config['genuine_samples'] + config['validation_samples'] + test_size_each]
-    test_fake = fake[:test_size_each]
-    
+    train_genuine = generate_synthetic_reviews(config['genuine_samples'], 'genuine', rng)
+    val_genuine = generate_synthetic_reviews(config['validation_samples'], 'genuine', rng)
+    calibration_fake = generate_synthetic_reviews(config['calibration_fake_samples'], 'fake', rng)
+    test_genuine = generate_synthetic_reviews(test_size_each, 'genuine', rng)
+    test_fake = generate_synthetic_reviews(test_size_each, 'fake', rng)
+
     test_reviews = np.concatenate([test_genuine, test_fake])
     test_labels = np.concatenate([
-        np.zeros(test_size_each, dtype=int),  # 0 = genuine
-        np.ones(test_size_each, dtype=int)    # 1 = fake
+        np.zeros(test_size_each, dtype=int),
+        np.ones(test_size_each, dtype=int)
     ])
-    
-    # Shuffle test
-    shuffle_idx = np.random.permutation(len(test_reviews))
-    test_reviews = test_reviews[shuffle_idx]
-    test_labels = test_labels[shuffle_idx]
-    
-    return train_genuine, val_genuine, test_reviews, test_labels
+
+    shuffle_idx = rng.permutation(len(test_reviews))
+    return (
+        train_genuine,
+        val_genuine,
+        calibration_fake,
+        test_reviews[shuffle_idx],
+        test_labels[shuffle_idx]
+    )
 
 
 # ═════════════════════════════════════════════════════════════
@@ -312,7 +325,7 @@ class AutoencoderTrainer:
                 patience_counter = 0
                 # Save best model
                 model.save_model(
-                    'models/saved/autoencoder_model.pt',
+                    str(MODEL_DIR / 'autoencoder_model.pt'),
                     config=self.config
                 )
             else:
@@ -426,6 +439,30 @@ def evaluate_autoencoder(
     return metrics, all_errors, predictions
 
 
+def compute_error_scores(
+    model: ReviewAutoencoder,
+    data_loader: DataLoader,
+    device: str
+) -> np.ndarray:
+    """Compute per-review reconstruction errors for a dataloader."""
+    model.eval()
+    errors = []
+
+    with torch.no_grad():
+        for token_ids, _ in data_loader:
+            token_ids = token_ids.to(device)
+            reconstructed_logits = model(token_ids)
+            mask = (token_ids != 0).float()
+            batch_errors = model.compute_reconstruction_error(
+                token_ids,
+                reconstructed_logits,
+                mask
+            )
+            errors.extend(batch_errors.cpu().numpy())
+
+    return np.array(errors)
+
+
 def plot_reconstruction_error_distribution(
     genuine_errors: np.ndarray,
     fake_errors: np.ndarray,
@@ -445,7 +482,7 @@ def plot_reconstruction_error_distribution(
     plt.grid(alpha=0.3)
     plt.tight_layout()
     
-    save_path = Path('models/saved/reconstruction_error_distribution.png')
+    save_path = MODEL_DIR / 'reconstruction_error_distribution.png'
     save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"↳ Distribution plot saved to {save_path}")
@@ -469,7 +506,7 @@ def plot_roc_curve(test_labels: np.ndarray, error_scores: np.ndarray) -> None:
     plt.grid(alpha=0.3)
     plt.tight_layout()
     
-    save_path = Path('models/saved/roc_curve_autoencoder.png')
+    save_path = MODEL_DIR / 'roc_curve_autoencoder.png'
     save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"↳ ROC curve saved to {save_path}")
@@ -491,9 +528,10 @@ def main():
     
     # Load data
     print("\n📊 Loading data...")
-    train_gen, val_gen, test_reviews, test_labels = load_fake_review_data(CONFIG)
+    train_gen, val_gen, calibration_fake, test_reviews, test_labels = load_fake_review_data(CONFIG)
     print(f"Genuine training: {len(train_gen)}")
     print(f"Genuine validation: {len(val_gen)}")
+    print(f"Fake calibration: {len(calibration_fake)}")
     print(f"Test ({len(test_reviews)}): {(test_labels==0).sum()} genuine, {(test_labels==1).sum()} fake")
     
     # Preprocess
@@ -518,6 +556,7 @@ def main():
     
     train_encoded = encode_batch(train_gen)
     val_encoded = encode_batch(val_gen)
+    calibration_fake_encoded = encode_batch(calibration_fake)
     test_encoded = encode_batch(test_reviews)
     
     # Create datasets
@@ -529,6 +568,10 @@ def main():
         torch.LongTensor(val_encoded),
         torch.zeros(len(val_encoded), dtype=torch.long)
     )
+    calibration_fake_dataset = TensorDataset(
+        torch.LongTensor(calibration_fake_encoded),
+        torch.ones(len(calibration_fake_encoded), dtype=torch.long)
+    )
     test_dataset = TensorDataset(
         torch.LongTensor(test_encoded),
         torch.LongTensor(test_labels)
@@ -536,41 +579,25 @@ def main():
     
     train_loader = DataLoader(train_dataset, batch_size=CONFIG['batch_size'], shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=CONFIG['batch_size'])
+    calibration_fake_loader = DataLoader(calibration_fake_dataset, batch_size=CONFIG['batch_size'])
     test_loader = DataLoader(test_dataset, batch_size=CONFIG['batch_size'])
     
     # Build and train model
     model = ReviewAutoencoder(
-        vocab_size=CONFIG['max_vocab'] + 1,
+        vocab_size=preprocessor.vocab_size,
         embedding_dim=CONFIG['embedding_dim'],
         hidden_dim=CONFIG['hidden_dim']
     ).to(device)
     
     trainer = AutoencoderTrainer(CONFIG, preprocessor, device)
     train_log = trainer.train(model, train_loader, val_loader)
+    model = ReviewAutoencoder.load_model(str(MODEL_DIR / 'autoencoder_model.pt'), device=device)
     
     # Calibrate threshold
     print("\n🎯 Computing reconstruction errors...")
-    _, genuine_errors = trainer.validate(model, val_loader)
-    
-    # Get fake errors
-    _, fake_errors_list = trainer.validate(model, val_loader)  # Placeholder
-    
-    # For demonstration, compute fake errors from test set
-    model.eval()
-    test_errors = []
-    with torch.no_grad():
-        for token_ids, _ in val_loader:
-            token_ids = token_ids.to(device)
-            reconstructed = model(token_ids)
-            mask = (token_ids != 0).float()
-            errors = model.compute_reconstruction_error(token_ids, reconstructed, mask)
-            test_errors.extend(errors.cpu().numpy())
-    
-    fake_errors = np.array(test_errors[len(genuine_errors):])
-    if len(fake_errors) == 0:
-        # If not enough data, duplicate
-        fake_errors = np.concatenate([genuine_errors, genuine_errors * 1.5])
-    
+    genuine_errors = compute_error_scores(model, val_loader, device)
+    fake_errors = compute_error_scores(model, calibration_fake_loader, device)
+
     threshold = calibrate_threshold(model, genuine_errors, fake_errors)
     
     # Evaluate
@@ -594,18 +621,13 @@ def main():
     plot_roc_curve(test_labels, error_scores)
     
     # Save checkpoint with threshold
-    checkpoint_path = Path('models/saved/autoencoder_checkpoint.pt')
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'threshold': threshold,
-        'metrics': metrics,
-        'config': CONFIG
-    }, checkpoint_path)
+    checkpoint_path = MODEL_DIR / 'autoencoder_checkpoint.pt'
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    model.save_model(str(checkpoint_path), threshold=threshold, config=CONFIG)
     print(f"✓ Checkpoint saved to {checkpoint_path}")
     
     # Save training log
-    log_path = Path('models/saved/training_log_autoencoder.json')
+    log_path = MODEL_DIR / 'training_log_autoencoder.json'
     with open(log_path, 'w') as f:
         json.dump({
             **train_log,

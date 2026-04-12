@@ -46,6 +46,8 @@ models/saved/*.pt
 models/saved/*.pkl
 
 # Training outputs
+training/models/
+training_log_gpu.txt
 models/saved/confusion_matrix_*.png
 models/saved/training_log_*.json
 models/saved/*_comparison_*.png
