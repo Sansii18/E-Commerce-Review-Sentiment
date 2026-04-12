@@ -8,10 +8,18 @@ Produces training logs and confusion matrix for analysis.
 Corresponds to: Practical 7 (Optimization comparison) + Practical 5 (Regularization)
 """
 
+import sys
+from pathlib import Path
+from typing import Tuple
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -38,7 +46,7 @@ CONFIG = {
     'hidden_dim': 256,
     'num_layers': 4,
     'dropout': 0.3,
-    'batch_size': 32,
+    'batch_size': 64,  # Increased for M2 GPU (10GB unified memory)
     'num_epochs': 10,
     'learning_rate': {
         'adam': 1e-3,
@@ -50,7 +58,12 @@ CONFIG = {
         'l1_factor': 0.0,
         'early_stopping_patience': 3
     },
-    'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+    'mixed_precision': True,  # Enable for M2 GPU
+    'device': (
+        'mps' if torch.backends.mps.is_available() else (
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+    )
 }
 
 
@@ -310,6 +323,10 @@ class SentimentTrainer:
         }
         
         for epoch in range(self.config['num_epochs']):
+            # Optimize GPU memory for M2
+            if self.device == 'mps':
+                torch.mps.empty_cache()
+            
             epoch_start = time.time()
             
             # Train

@@ -8,6 +8,13 @@ Then evaluates on mixed genuine + fake test set.
 Corresponds to: Practical 9 (Autoencoders) + Practical 6 (Anomaly Detection)
 """
 
+import sys
+from pathlib import Path
+from typing import Tuple
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -38,10 +45,15 @@ CONFIG = {
     'max_len': 200,
     'embedding_dim': 128,
     'hidden_dim': 128,
-    'batch_size': 32,
+    'batch_size': 64,  # Increased for M2 GPU (10GB unified memory)
     'num_epochs': 20,
     'learning_rate': 1e-3,
-    'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+    'mixed_precision': True,  # Enable for M2 GPU
+    'device': (
+        'mps' if torch.backends.mps.is_available() else (
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+    )
 }
 
 
@@ -270,6 +282,10 @@ class AutoencoderTrainer:
         }
         
         for epoch in range(self.config['num_epochs']):
+            # Optimize GPU memory for M2
+            if self.device == 'mps':
+                torch.mps.empty_cache()
+            
             train_loss = self.train_epoch(model, train_loader, optimizer)
             val_loss, _ = self.validate(model, val_loader)
             
