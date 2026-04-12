@@ -45,18 +45,21 @@ CONFIG = {
     'embedding_dim': 128,
     'hidden_dim': 256,
     'num_layers': 4,
-    'dropout': 0.3,
+    'dropout': 0.2,  # Reduced from 0.3 to prevent divergence
     'batch_size': 64,  # Increased for M2 GPU (10GB unified memory)
     'num_epochs': 10,
     'learning_rate': {
-        'adam': 1e-3,
-        'sgd': 0.01,
-        'rmsprop': 1e-3
+        'adam': 5e-4,  # Reduced from 1e-3 (was too aggressive)
+        'sgd': 0.005,  # Reduced from 0.01
+        'rmsprop': 5e-4  # Reduced from 1e-3
     },
     'regularization': {
         'l2_weight_decay': 1e-4,
         'l1_factor': 0.0,
-        'early_stopping_patience': 3
+        'early_stopping_patience': 5,  # Increased from 3 to allow recovery
+        'gradient_clip': 1.0,  # Prevent gradient explosion
+        'warmup_epochs': 1  # Stabilize first epoch
+    },
     },
     'mixed_precision': True,  # Enable for M2 GPU
     'device': (
@@ -216,6 +219,10 @@ class SentimentTrainer:
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
+            
+            # Gradient clipping to prevent explosion
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             total_loss += loss.item()

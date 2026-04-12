@@ -47,7 +47,9 @@ CONFIG = {
     'hidden_dim': 128,
     'batch_size': 64,  # Increased for M2 GPU (10GB unified memory)
     'num_epochs': 20,
-    'learning_rate': 1e-3,
+    'learning_rate': 5e-4,  # Reduced from 1e-3 to prevent divergence
+    'gradient_clip': 1.0,  # Prevent gradient explosion
+    'early_stopping_patience': 5,  # Increased to allow recovery
     'mixed_precision': True,  # Enable for M2 GPU
     'device': (
         'mps' if torch.backends.mps.is_available() else (
@@ -220,6 +222,10 @@ class AutoencoderTrainer:
             # Backward
             optimizer.zero_grad()
             loss.backward()
+            
+            # Gradient clipping to prevent explosion
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             total_loss += loss.item()
@@ -281,6 +287,10 @@ class AutoencoderTrainer:
             'val_loss': []
         }
         
+        best_val_loss = float('inf')
+        patience = self.config.get('early_stopping_patience', 5)
+        patience_counter = 0
+        
         for epoch in range(self.config['num_epochs']):
             # Optimize GPU memory for M2
             if self.device == 'mps':
@@ -295,12 +305,22 @@ class AutoencoderTrainer:
             
             print(f"Epoch {epoch+1}/{self.config['num_epochs']} | "
                   f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            
+            # Early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                # Save best model
+                model.save_model(
+                    'models/saved/autoencoder_model.pt',
+                    config=self.config
+                )
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"Early stopping at epoch {epoch+1} (patience={patience})")
+                    break
         
-        # Save model
-        model.save_model(
-            'models/saved/autoencoder_model.pt',
-            config=self.config
-        )
         print("✓ Model saved")
         
         return log
