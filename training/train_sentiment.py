@@ -43,15 +43,16 @@ MODEL_DIR = PROJECT_ROOT / 'models' / 'saved'
 
 CONFIG = {
     'data_mode': 'real',  # Falls back to synthetic if the dataset is unavailable
-    'max_samples': 200000,  # 100K positive + 100K negative
+    'max_samples': 100000,  # 50K positive + 50K negative for faster local training
     'max_vocab': 20000,
     'max_len': 200,  # 95th percentile of review lengths
     'embedding_dim': 128,
     'hidden_dim': 256,
-    'num_layers': 4,
+    'num_layers': 3,
     'dropout': 0.2,  # Reduced from 0.3 to prevent divergence
-    'batch_size': 64,  # Increased for M2 GPU (10GB unified memory)
-    'num_epochs': 10,
+    'batch_size': 128,  # Better throughput on Apple Silicon while remaining stable
+    'num_epochs': 6,
+    'optimizers_to_train': ['adam'],
     'learning_rate': {
         'adam': 5e-4,  # Reduced from 1e-3 (was too aggressive)
         'sgd': 0.005,  # Reduced from 0.01
@@ -60,7 +61,7 @@ CONFIG = {
     'regularization': {
         'l2_weight_decay': 1e-4,
         'l1_factor': 0.0,
-        'early_stopping_patience': 5,  # Increased from 3 to allow recovery
+        'early_stopping_patience': 3,
         'gradient_clip': 1.0,  # Prevent gradient explosion
         'warmup_epochs': 1  # Stabilize first epoch
     },
@@ -549,7 +550,7 @@ def main():
     best_model_path = None
     best_accuracy = 0.0
     
-    for optimizer_name in ['adam', 'sgd', 'rmsprop']:
+    for optimizer_name in CONFIG['optimizers_to_train']:
         model = SentimentLSTM(
             vocab_size=preprocessor.vocab_size,
             embedding_dim=CONFIG['embedding_dim'],

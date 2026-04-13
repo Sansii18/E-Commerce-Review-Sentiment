@@ -133,19 +133,19 @@ class ScoreFuser:
         
         explanation_parts = []
         
-        # Explain reconstruction error component
+        # Explain Stage 2 detector component
         if normalized_error > 0.7:
             explanation_parts.append(
-                f"• Review uses unusual language patterns (error: {reconstruction_error:.3f} "
-                f"vs threshold: {normalized_threshold:.3f})"
+                f"• Stage 2 detector found strong deceptive-language patterns "
+                f"(score: {reconstruction_error:.3f}, threshold: {normalized_threshold:.3f})"
             )
         elif normalized_error > 0.4:
             explanation_parts.append(
-                f"• Moderate pattern deviation detected"
+                f"• Stage 2 detector found moderate signs of suspicious review language"
             )
         else:
             explanation_parts.append(
-                f"• Review language patterns appear normal"
+                f"• Stage 2 detector found little evidence of deceptive review language"
             )
         
         # Explain contradiction component
