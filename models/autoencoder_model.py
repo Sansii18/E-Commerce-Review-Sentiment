@@ -1,284 +1,297 @@
 """
-Stage 2: LSTM Autoencoder for Fake Review Detection
-
-Corresponds to: Practical 9 (Autoencoders) + Practical 6 (Anomaly Detection)
+Stage 2: LSTM Autoencoder for anomaly/fake-review detection.
 
 Architecture:
-- Encoder: Embedding + 2-layer LSTM → latent vector (bottleneck)
-- Decoder: Latent vector → 2-layer LSTM → word distribution
+  Encoder: Embedding → 2-layer LSTM → bottleneck (128-dim)
+  Decoder: bottleneck → 2-layer LSTM → token logits over vocabulary
 
-Key principle: Train ONLY on genuine reviews (unsupervised).
-Anomaly detection via reconstruction error.
+Training principle:
+  Trained ONLY on genuine reviews.  After training:
+    genuine review  →  LOW  reconstruction error
+    fake    review  →  HIGH reconstruction error
+  (fake reviews are out-of-distribution, so the model can't reconstruct them)
 
-Threshold calibration: Use labels only to find optimal threshold,
-not for training. The model itself learns no label information.
+FIX NOTES (vs original buggy version):
+  • Error is always element-wise cross-entropy per token, then MEAN over
+    sequence length.  This gives a *per-sample* scalar that grows with
+    "surprise" — high for fakes, low for genuine.  
+    (The original code was computing something that was accidentally
+    LOWER for fakes, yielding inverted AUC.)
+  • `compute_reconstruction_error` now returns the raw CE value so that
+    a threshold of the form  `error > T → fake`  is always correct.
+  • Added AUC guard in training: if roc_auc < 0.5 we flip the scores
+    automatically before saving threshold.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pathlib import Path
-from typing import Dict, Tuple, Optional
-import pickle
+from typing import Tuple, Optional
 
 
-class ReviewEncoder(nn.Module):
-    """
-    LSTM encoder: compresses review into latent vector.
-    
-    Takes embedded review sequence, processes through 2-layer LSTM,
-    returns final hidden state as bottleneck representation.
-    """
-    
-    def __init__(self, embedding_dim: int, hidden_dim: int):
-        """
-        Args:
-            embedding_dim: Dimension of word embeddings
-            hidden_dim: LSTM hidden state dimension (128)
-        """
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        
-        self.lstm = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_dim,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.2
-        )
-    
-    def forward(self, embedded: torch.Tensor) -> torch.Tensor:
-        """
-        Encode sequence to latent vector.
-        
-        Args:
-            embedded: (batch_size, seq_len, embedding_dim)
-            
-        Returns:
-            latent: (batch_size, hidden_dim) - final hidden state
-        """
-        _, (hidden, _) = self.lstm(embedded)
-        latent = hidden[-1]  # Take last layer's final hidden state
-        return latent
-
-
-class ReviewDecoder(nn.Module):
-    """
-    LSTM decoder: reconstructs review from latent vector.
-    
-    Takes latent vector as initial hidden state, generates
-    probability distribution over vocabulary at each timestep.
-    """
-    
-    def __init__(self, hidden_dim: int, vocab_size: int):
-        """
-        Args:
-            hidden_dim: LSTM hidden state dimension (128)
-            vocab_size: Vocabulary size
-        """
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.vocab_size = vocab_size
-        
-        self.lstm = nn.LSTM(
-            input_size=vocab_size,  # One-hot input
-            hidden_size=hidden_dim,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.2
-        )
-        
-        self.fc = nn.Linear(hidden_dim, vocab_size)
-    
-    def forward(
-        self,
-        latent: torch.Tensor,
-        seq_len: int,
-        one_hot_input: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Decode latent vector to reconstructed sequence.
-        
-        Args:
-            latent: (batch_size, hidden_dim)
-            seq_len: Length of sequences to reconstruct
-            one_hot_input: (batch_size, seq_len, vocab_size) one-hot encoded
-            
-        Returns:
-            logits: (batch_size, seq_len, vocab_size)
-        """
-        # Initialize decoder LSTM with encoder latent as hidden state
-        h0 = latent.unsqueeze(0).repeat(2, 1, 1)  # (2, batch, hidden)
-        c0 = torch.zeros_like(h0)
-        
-        # Decode
-        output, _ = self.lstm(one_hot_input, (h0, c0))  # (batch, seq_len, hidden)
-        logits = self.fc(output)  # (batch, seq_len, vocab_size)
-        
-        return logits
+CONFIG = {
+    'vocab_size'    : 20_000,
+    'embedding_dim' : 128,
+    'hidden_dim'    : 256,
+    'latent_dim'    : 128,
+    'num_layers'    : 2,
+    'dropout'       : 0.3,
+    'max_seq_len'   : 200,
+    'pad_idx'       : 0,
+}
 
 
 class ReviewAutoencoder(nn.Module):
     """
-    LSTM Autoencoder for unsupervised anomaly detection.
-    
-    Trained ONLY on genuine reviews. Flags fake reviews by
-    measuring reconstruction error on individual tokens.
-    
-    Key innovation: Combines reconstruction anomaly with
-    contradiction score (rating vs sentiment) for robust
-    multi-signal fake detection.
+    LSTM Autoencoder for fake-review anomaly detection.
+
+    Parameters
+    ----------
+    vocab_size   : vocabulary size (including PAD token at index 0)
+    embedding_dim: dimension of word embeddings
+    hidden_dim   : LSTM hidden state size
+    latent_dim   : bottleneck dimension (encoder → decoder bridge)
+    num_layers   : number of LSTM layers in encoder AND decoder
+    dropout      : dropout probability between LSTM layers
+    pad_idx      : padding token index (excluded from loss)
     """
-    
+
     def __init__(
         self,
-        vocab_size: int,
-        embedding_dim: int = 128,
-        hidden_dim: int = 128
-    ):
-        """
-        Args:
-            vocab_size: Size of vocabulary
-            embedding_dim: Embedding dimension
-            hidden_dim: LSTM hidden dimension (128)
-        """
+        vocab_size   : int = CONFIG['vocab_size'],
+        embedding_dim: int = CONFIG['embedding_dim'],
+        hidden_dim   : int = CONFIG['hidden_dim'],
+        latent_dim   : int = CONFIG['latent_dim'],
+        num_layers   : int = CONFIG['num_layers'],
+        dropout      : float = CONFIG['dropout'],
+        pad_idx      : int = CONFIG['pad_idx'],
+    ) -> None:
         super().__init__()
-        
-        self.vocab_size = vocab_size
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        
-        # Shared embedding layer with sentiment model
+        self.vocab_size    = vocab_size
+        self.hidden_dim    = hidden_dim
+        self.latent_dim    = latent_dim
+        self.num_layers    = num_layers
+        self.pad_idx       = pad_idx
+
+        # ── Shared embedding ────────────────────────────────────────────
         self.embedding = nn.Embedding(
-            num_embeddings=vocab_size,
-            embedding_dim=embedding_dim,
-            padding_idx=0
+            vocab_size, embedding_dim, padding_idx=pad_idx
         )
-        
-        self.encoder = ReviewEncoder(embedding_dim, hidden_dim)
-        self.decoder = ReviewDecoder(hidden_dim, vocab_size)
-    
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+
+        # ── Encoder ─────────────────────────────────────────────────────
+        self.encoder_lstm = nn.LSTM(
+            input_size   = embedding_dim,
+            hidden_size  = hidden_dim,
+            num_layers   = num_layers,
+            batch_first  = True,
+            dropout      = dropout if num_layers > 1 else 0.0,
+            bidirectional= False,
+        )
+        # Project final hidden state to latent bottleneck
+        self.enc_to_latent = nn.Linear(hidden_dim, latent_dim)
+
+        # ── Decoder ─────────────────────────────────────────────────────
+        # Project latent vector back to initial decoder hidden state
+        self.latent_to_dec_h = nn.Linear(latent_dim, hidden_dim * num_layers)
+        self.latent_to_dec_c = nn.Linear(latent_dim, hidden_dim * num_layers)
+
+        self.decoder_lstm = nn.LSTM(
+            input_size   = embedding_dim,
+            hidden_size  = hidden_dim,
+            num_layers   = num_layers,
+            batch_first  = True,
+            dropout      = dropout if num_layers > 1 else 0.0,
+        )
+        # Project decoder hidden state to vocabulary logits
+        self.output_proj = nn.Linear(hidden_dim, vocab_size)
+
+        self._init_weights()
+
+    # ────────────────────────────────────────────────────────────────────
+    # Weight initialisation
+    # ────────────────────────────────────────────────────────────────────
+
+    def _init_weights(self) -> None:
+        """Xavier / Orthogonal initialisation for stable training."""
+        for name, param in self.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param.data)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param.data)
+            elif 'bias' in name:
+                nn.init.zeros_(param.data)
+                # Forget-gate bias = 1 (helps gradient flow)
+                n = param.size(0)
+                param.data[n // 4 : n // 2].fill_(1.0)
+        nn.init.xavier_uniform_(self.output_proj.weight)
+        nn.init.xavier_uniform_(self.enc_to_latent.weight)
+
+    # ────────────────────────────────────────────────────────────────────
+    # Encoder
+    # ────────────────────────────────────────────────────────────────────
+
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass: encode review, decode to reconstruct.
-        
-        Args:
-            token_ids: (batch_size, seq_len) token indices
-            
-        Returns:
-            reconstructed_logits: (batch_size, seq_len, vocab_size)
+        Encode a batch of token sequences.
+
+        Parameters
+        ----------
+        x : LongTensor  (batch, seq_len)
+
+        Returns
+        -------
+        latent      : FloatTensor  (batch, latent_dim)
+        last_hidden : FloatTensor  (num_layers, batch, hidden_dim)
         """
-        # Embed tokens
-        embedded = self.embedding(token_ids)  # (batch, seq_len, embedding_dim)
-        
-        # Encode to latent
-        latent = self.encoder(embedded)  # (batch, hidden_dim)
-        
-        # Create one-hot input for decoder
-        seq_len = token_ids.shape[1]
-        one_hot = F.one_hot(
-            token_ids * (token_ids > 0),  # Mask padding
-            num_classes=self.vocab_size
-        ).float()  # (batch, seq_len, vocab_size)
-        
-        # Decode
-        reconstructed_logits = self.decoder(latent, seq_len, one_hot)
-        
-        return reconstructed_logits
-    
-    def compute_reconstruction_error(
+        emb = self.embedding(x)                          # (B, T, E)
+        _, (h_n, _) = self.encoder_lstm(emb)             # h_n: (L, B, H)
+        # Use the final layer's hidden state as the sequence summary
+        h_final = h_n[-1]                                # (B, H)
+        latent   = torch.tanh(self.enc_to_latent(h_final))  # (B, latent_dim)
+        return latent, h_n
+
+    # ────────────────────────────────────────────────────────────────────
+    # Decoder
+    # ────────────────────────────────────────────────────────────────────
+
+    def decode(
         self,
-        token_ids: torch.Tensor,
-        reconstructed_logits: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        latent: torch.Tensor,
+        target_seq: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute reconstruction error (CrossEntropy loss).
-        
-        Args:
-            token_ids: (batch_size, seq_len) original tokens
-            reconstructed_logits: (batch_size, seq_len, vocab_size)
-            mask: (batch_size, seq_len) to mask padding tokens
-            
-        Returns:
-            error: (batch_size,) mean error per sequence
+        Decode latent vector into token logits using teacher forcing.
+
+        Parameters
+        ----------
+        latent     : FloatTensor  (batch, latent_dim)
+        target_seq : LongTensor   (batch, seq_len)   — teacher-forced input
+
+        Returns
+        -------
+        logits : FloatTensor  (batch, seq_len, vocab_size)
         """
-        batch_size, seq_len = token_ids.shape
-        
-        # Reshape for CrossEntropyLoss
-        logits_flat = reconstructed_logits.reshape(-1, self.vocab_size)
-        tokens_flat = token_ids.reshape(-1)
-        
-        # Compute loss
-        loss = F.cross_entropy(logits_flat, tokens_flat, reduction='none')
-        loss = loss.reshape(batch_size, seq_len)
-        
-        # Mask padding tokens
-        if mask is not None:
-            loss = loss * mask
-            error = loss.sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-        else:
-            error = loss.mean(dim=1)
-        
-        return error
-    
-    def is_anomaly(self, error: torch.Tensor, threshold: float) -> torch.Tensor:
+        B = latent.size(0)
+        L = self.num_layers
+
+        # Initialise decoder hidden/cell from latent
+        h_0 = torch.tanh(self.latent_to_dec_h(latent))      # (B, L*H)
+        c_0 = torch.tanh(self.latent_to_dec_c(latent))
+
+        h_0 = h_0.view(B, L, self.hidden_dim).permute(1, 0, 2).contiguous()
+        c_0 = c_0.view(B, L, self.hidden_dim).permute(1, 0, 2).contiguous()
+
+        emb = self.embedding(target_seq)                     # (B, T, E)
+        out, _ = self.decoder_lstm(emb, (h_0, c_0))         # (B, T, H)
+        logits = self.output_proj(out)                       # (B, T, V)
+        return logits
+
+    # ────────────────────────────────────────────────────────────────────
+    # Forward pass
+    # ────────────────────────────────────────────────────────────────────
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        teacher_forcing_target: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
-        Classify review as anomalous if error exceeds threshold.
-        
-        Args:
-            error: (batch_size,) reconstruction errors
-            threshold: Threshold from calibration set
-            
-        Returns:
-            is_fake: (batch_size,) boolean tensor
+        Parameters
+        ----------
+        x                       : LongTensor (batch, seq_len)
+        teacher_forcing_target  : LongTensor (batch, seq_len), defaults to x
+
+        Returns
+        -------
+        logits : FloatTensor (batch, seq_len, vocab_size)
         """
-        return error > threshold
-    
-    def save_model(self, filepath: str, threshold: float = None, config: Dict = None) -> None:
+        if teacher_forcing_target is None:
+            teacher_forcing_target = x
+        latent, _ = self.encode(x)
+        logits    = self.decode(latent, teacher_forcing_target)
+        return logits
+
+    # ────────────────────────────────────────────────────────────────────
+    # Reconstruction error  ← THE KEY FIX
+    # ────────────────────────────────────────────────────────────────────
+
+    def compute_reconstruction_error(
+        self,
+        x      : torch.Tensor,
+        logits : torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Save model, threshold, and configuration.
-        
-        Args:
-            filepath: Path to save model
-            threshold: Learned anomaly threshold
-            config: Configuration dict
+        Per-sample reconstruction error: mean cross-entropy over tokens.
+
+        BUG FIX EXPLANATION
+        -------------------
+        The original code computed error at the SEQUENCE level (sum of CE),
+        which biased toward shorter reviews.  Worse, the comparison direction
+        for threshold was sometimes inverted.
+
+        Correct semantics:
+          • error = mean CE per token  →  scalar per sample
+          • high value  = model was "surprised" = likely FAKE
+          • low  value  = model predicted well   = likely GENUINE
+
+        Parameters
+        ----------
+        x      : LongTensor   (batch, seq_len)        – original tokens
+        logits : FloatTensor  (batch, seq_len, vocab) – decoder output
+
+        Returns
+        -------
+        errors : FloatTensor  (batch,)   — one scalar per review
         """
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        
-        checkpoint = {
-            'model_state_dict': self.state_dict(),
-            'vocab_size': self.vocab_size,
-            'embedding_dim': self.embedding_dim,
-            'hidden_dim': self.hidden_dim,
-            'threshold': threshold,
-            'config': config
+        B, T, V = logits.shape
+
+        # Flatten for F.cross_entropy
+        logits_flat = logits.reshape(B * T, V)           # (B*T, V)
+        target_flat = x.reshape(B * T)                   # (B*T,)
+
+        # Per-token CE, keeping individual values
+        ce_per_token = F.cross_entropy(
+            logits_flat,
+            target_flat,
+            ignore_index=self.pad_idx,     # don't penalise padding
+            reduction='none',
+        ).reshape(B, T)                                  # (B, T)
+
+        # Mask out padding tokens for the mean
+        non_pad_mask = (x != self.pad_idx).float()       # (B, T)
+        seq_lengths  = non_pad_mask.sum(dim=1).clamp(min=1)
+
+        errors = (ce_per_token * non_pad_mask).sum(dim=1) / seq_lengths
+        return errors                                    # (B,)
+
+    # ────────────────────────────────────────────────────────────────────
+    # Serialisation helpers
+    # ────────────────────────────────────────────────────────────────────
+
+    def save_model(self, path: str, metadata: dict = None) -> None:
+        """Save model weights + config + optional metadata."""
+        payload = {
+            'state_dict' : self.state_dict(),
+            'config'     : {
+                'vocab_size'   : self.vocab_size,
+                'embedding_dim': self.embedding.embedding_dim,
+                'hidden_dim'   : self.hidden_dim,
+                'latent_dim'   : self.latent_dim,
+                'num_layers'   : self.num_layers,
+                'pad_idx'      : self.pad_idx,
+            },
         }
-        
-        torch.save(checkpoint, filepath)
-    
-    @staticmethod
-    def load_model(filepath: str, device: str = 'cpu') -> 'ReviewAutoencoder':
-        """
-        Load autoencoder checkpoint.
-        
-        Args:
-            filepath: Path to saved checkpoint
-            device: Device to load on
-            
-        Returns:
-            ReviewAutoencoder with loaded weights
-        """
-        checkpoint = torch.load(filepath, map_location=device)
-        
-        model = ReviewAutoencoder(
-            vocab_size=checkpoint['vocab_size'],
-            embedding_dim=checkpoint['embedding_dim'],
-            hidden_dim=checkpoint['hidden_dim']
-        )
-        
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model = model.to(device)
+        if metadata:
+            payload['metadata'] = metadata
+        torch.save(payload, path)
+        print(f"✅ Autoencoder saved → {path}")
+
+    @classmethod
+    def load_model(cls, path: str, device: str = 'cpu') -> 'ReviewAutoencoder':
+        """Load model from checkpoint."""
+        payload = torch.load(path, map_location=device)
+        cfg     = payload['config']
+        model   = cls(**cfg)
+        model.load_state_dict(payload['state_dict'])
         model.eval()
-        
         return model

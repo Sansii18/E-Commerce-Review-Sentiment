@@ -1,275 +1,162 @@
 """
-Stage 1: LSTM-based Sentiment Classifier with Attention
+Stage 1: LSTM Sentiment Classifier
+====================================
+4-layer stacked LSTM + single-head attention → binary sentiment (positive/negative).
 
-Corresponds to: Practical 8 (LSTM) + Practical 5 (Regularization)
+Architecture
+------------
+  Embedding (128-dim, learnable)
+  → 4 × LSTM (256 hidden units, Dropout 0.3 between layers)
+  → Attention pooling (highlights sentiment-driving tokens)
+  → FC: 256 → 64 → 1 (sigmoid)
 
-Architecture:
-- Embedding layer (vocab_size × 128)
-- 4 stacked LSTM layers (hidden=256, bidirectional=False)
-- Dropout between layers (0.3)
-- Single-head Attention mechanism
-- Fully connected layers (256 → 64 → 1)
-- Sigmoid output for binary classification
-
-Key feature: Attention mechanism provides interpretability by
-highlighting tokens most responsible for sentiment prediction.
+Output
+------
+  sentiment_prob  : float in [0, 1]   (1 = positive sentiment)
+  attention_weights: (seq_len,)        for interpretability
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pickle
-import json
-from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Tuple
+
+
+CONFIG = {
+    'vocab_size'    : 20_000,
+    'embedding_dim' : 128,
+    'hidden_dim'    : 256,
+    'num_layers'    : 4,
+    'dropout'       : 0.3,
+    'fc_hidden'     : 64,
+    'max_seq_len'   : 200,
+    'pad_idx'       : 0,
+}
 
 
 class Attention(nn.Module):
-    """
-    Single-head attention mechanism for sequence-to-scalar prediction.
-    
-    Learns which tokens in a sequence are most important for
-    sentiment classification. Returns both context vector and
-    attention weights for explainability.
-    """
-    
-    def __init__(self, hidden_dim: int):
-        """
-        Args:
-            hidden_dim: Dimension of LSTM hidden state
-        """
+    """Single-head additive attention over LSTM outputs."""
+
+    def __init__(self, hidden_dim: int) -> None:
         super().__init__()
-        self.attention = nn.Linear(hidden_dim, 1)
-    
+        self.attn  = nn.Linear(hidden_dim, hidden_dim)
+        self.v     = nn.Linear(hidden_dim, 1, bias=False)
+
     def forward(
         self,
-        lstm_output: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        lstm_out    : torch.Tensor,   # (B, T, H)
+        padding_mask: torch.Tensor,   # (B, T)  True where PAD
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute attention weights over sequence.
-        
-        Args:
-            lstm_output: Tensor of shape (batch_size, seq_len, hidden_dim)
-            
-        Returns:
-            context: Weighted sum of LSTM outputs (batch_size, hidden_dim)
-            attention_weights: Normalized weights (batch_size, seq_len)
+        Returns
+        -------
+        context   : (B, H)   — attended context vector
+        attn_w    : (B, T)   — attention weights
         """
-        # Compute attention scores for each token
-        scores = self.attention(lstm_output)  # (batch_size, seq_len, 1)
-        scores = scores.squeeze(-1)  # (batch_size, seq_len)
-        
-        # Prevent the model from attending to padding tokens.
-        if mask is not None:
-            scores = scores.masked_fill(~mask.bool(), torch.finfo(scores.dtype).min)
-
-        # Normalize with softmax
-        attention_weights = F.softmax(scores, dim=1)  # (batch_size, seq_len)
-        
-        # Compute weighted sum across sequence
-        context = torch.bmm(
-            attention_weights.unsqueeze(1),  # (batch_size, 1, seq_len)
-            lstm_output  # (batch_size, seq_len, hidden_dim)
-        )  # (batch_size, 1, hidden_dim)
-        
-        context = context.squeeze(1)  # (batch_size, hidden_dim)
-        
-        return context, attention_weights
+        scores = self.v(torch.tanh(self.attn(lstm_out))).squeeze(-1)  # (B, T)
+        scores = scores.masked_fill(padding_mask, float('-inf'))
+        attn_w = F.softmax(scores, dim=-1)                             # (B, T)
+        # Replace NaN rows (full padding) with uniform attention
+        nan_mask = torch.isnan(attn_w).all(dim=-1, keepdim=True)
+        attn_w   = torch.where(nan_mask, torch.ones_like(attn_w) / attn_w.size(1), attn_w)
+        context  = (attn_w.unsqueeze(-1) * lstm_out).sum(dim=1)        # (B, H)
+        return context, attn_w
 
 
 class SentimentLSTM(nn.Module):
     """
-    4-layer LSTM with attention for binary sentiment classification.
-    
-    Key design decisions:
-    - 4 LSTM layers: ablation during training showed diminishing returns beyond 4
-    - Bidirectional=False: unidirectional LSTM better captures temporal flow
-      of sentiment expression in reviews
-    - Dropout 0.3: empirically tuned on validation set (see train_sentiment.py)
-    - Attention: enables interpretability by revealing which words drive sentiment
+    4-layer stacked LSTM with attention for binary sentiment classification.
+
+    Parameters
+    ----------
+    vocab_size   : int
+    embedding_dim: int
+    hidden_dim   : int
+    num_layers   : int   (4 by default)
+    dropout      : float
+    fc_hidden    : int   (intermediate FC dimension)
+    pad_idx      : int
     """
-    
+
     def __init__(
         self,
-        vocab_size: int,
-        embedding_dim: int = 128,
-        hidden_dim: int = 256,
-        num_layers: int = 4,
-        dropout: float = 0.3,
-        bidirectional: bool = False
-    ):
-        """
-        Args:
-            vocab_size: Size of vocabulary
-            embedding_dim: Embedding dimension (128)
-            hidden_dim: LSTM hidden state dimension (256)
-            num_layers: Number of stacked LSTM layers (4)
-            dropout: Dropout probability between layers
-            bidirectional: Whether to use bidirectional LSTM
-        """
+        vocab_size   : int   = CONFIG['vocab_size'],
+        embedding_dim: int   = CONFIG['embedding_dim'],
+        hidden_dim   : int   = CONFIG['hidden_dim'],
+        num_layers   : int   = CONFIG['num_layers'],
+        dropout      : float = CONFIG['dropout'],
+        fc_hidden    : int   = CONFIG['fc_hidden'],
+        pad_idx      : int   = CONFIG['pad_idx'],
+    ) -> None:
         super().__init__()
-        
-        self.vocab_size = vocab_size
-        self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.dropout_rate = dropout
-        self.bidirectional = bidirectional
-        
-        # Embedding layer
-        self.embedding = nn.Embedding(
-            num_embeddings=vocab_size,
-            embedding_dim=embedding_dim,
-            padding_idx=0  # Don't learn embeddings for <PAD> token
-        )
-        
-        # 4-layer LSTM
+        self.pad_idx    = pad_idx
+
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_idx)
+        self.dropout   = nn.Dropout(dropout)
+
         self.lstm = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=bidirectional
+            input_size   = embedding_dim,
+            hidden_size  = hidden_dim,
+            num_layers   = num_layers,
+            batch_first  = True,
+            dropout      = dropout,          # between layers
+            bidirectional= False,
         )
-        
-        # Attention mechanism
         self.attention = Attention(hidden_dim)
-        
-        # Classification head
-        lstm_output_dim = hidden_dim * (2 if bidirectional else 1)
-        self.fc1 = nn.Linear(lstm_output_dim, 64)
-        self.fc2 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
-        self.fc_dropout = nn.Dropout(dropout)
-        self.sigmoid = nn.Sigmoid()
+        self.fc1   = nn.Linear(hidden_dim, fc_hidden)
+        self.fc2   = nn.Linear(fc_hidden, 1)
+        self.bn    = nn.BatchNorm1d(fc_hidden)
 
-    def forward_logits(
-        self,
-        token_ids: torch.Tensor,
-        return_attention: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Forward pass that returns raw logits for numerically stable training.
-        """
-        # Track which tokens are real words so padding does not affect the LSTM
-        # state or the attention distribution.
-        padding_mask = token_ids.ne(0)
+        self._init_weights()
 
-        # Guard against fully empty inputs after preprocessing.
-        if not padding_mask.all(dim=1).all():
-            padding_mask = padding_mask.clone()
-            empty_rows = padding_mask.sum(dim=1) == 0
-            padding_mask[empty_rows, 0] = True
-
-        lengths = padding_mask.sum(dim=1).cpu()
-
-        # Embed tokens
-        embedded = self.embedding(token_ids)  # (batch, seq_len, embedding_dim)
-
-        packed = nn.utils.rnn.pack_padded_sequence(
-            embedded,
-            lengths,
-            batch_first=True,
-            enforce_sorted=False
-        )
-        packed_output, _ = self.lstm(packed)
-        lstm_output, _ = nn.utils.rnn.pad_packed_sequence(
-            packed_output,
-            batch_first=True,
-            total_length=token_ids.size(1)
-        )
-
-        # Apply attention
-        context, attention_weights = self.attention(lstm_output, mask=padding_mask)
-
-        # Classification head
-        x = self.relu(self.fc1(context))
-        x = self.fc_dropout(x)
-        logits = self.fc2(x).squeeze(-1)
-
-        if return_attention:
-            return logits, attention_weights
-        return logits, None
+    def _init_weights(self) -> None:
+        for name, param in self.lstm.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param.data)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param.data)
+            elif 'bias' in name:
+                nn.init.zeros_(param.data)
+                n = param.size(0)
+                param.data[n // 4 : n // 2].fill_(1.0)
 
     def forward(
         self,
-        token_ids: torch.Tensor,
-        return_attention: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        x: torch.Tensor,       # (B, T)
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass for sentiment classification.
-        
-        Args:
-            token_ids: Tensor of shape (batch_size, seq_len) with token indices
-            return_attention: If True, return attention weights
-            
-        Returns:
-            prediction: Tensor of shape (batch_size,) with probabilities 0-1
-            attention_weights: (batch_size, seq_len) if return_attention=True
+        Returns
+        -------
+        prob    : (B, 1)  — sentiment probability (sigmoid)
+        attn_w  : (B, T)  — per-token attention weights
         """
-        logits, attention_weights = self.forward_logits(
-            token_ids,
-            return_attention=return_attention
-        )
-        prediction = self.sigmoid(logits)
+        pad_mask = (x == self.pad_idx)                  # (B, T)
+        emb      = self.dropout(self.embedding(x))      # (B, T, E)
+        out, _   = self.lstm(emb)                       # (B, T, H)
+        context, attn_w = self.attention(out, pad_mask) # (B, H), (B, T)
+        h   = F.relu(self.bn(self.fc1(self.dropout(context))))
+        out = torch.sigmoid(self.fc2(self.dropout(h)))  # (B, 1)
+        return out, attn_w
 
-        if return_attention:
-            return prediction, attention_weights
-        else:
-            return prediction, None
-    
-    def save_model(self, filepath: str, config: Dict, best_val_accuracy: float = None) -> None:
-        """
-        Save model, vocabulary, and configuration.
-        
-        Args:
-            filepath: Path to save model
-            config: Configuration dict with hyperparameters
-            best_val_accuracy: Best validation accuracy achieved
-        """
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        
-        checkpoint = {
-            'model_state_dict': self.state_dict(),
-            'vocab_size': self.vocab_size,
-            'embedding_dim': self.embedding_dim,
-            'hidden_dim': self.hidden_dim,
-            'num_layers': self.num_layers,
-            'dropout': self.dropout_rate,
-            'bidirectional': self.bidirectional,
-            'config': config,
-            'best_val_accuracy': best_val_accuracy
-        }
-        
-        torch.save(checkpoint, filepath)
-    
-    @staticmethod
-    def load_model(filepath: str, device: str = 'cpu') -> 'SentimentLSTM':
-        """
-        Load model from checkpoint.
-        
-        Args:
-            filepath: Path to saved checkpoint
-            device: Device to load model on
-            
-        Returns:
-            SentimentLSTM model with loaded weights
-        """
-        checkpoint = torch.load(filepath, map_location=device)
-        
-        model = SentimentLSTM(
-            vocab_size=checkpoint['vocab_size'],
-            embedding_dim=checkpoint['embedding_dim'],
-            hidden_dim=checkpoint['hidden_dim'],
-            num_layers=checkpoint['num_layers'],
-            dropout=checkpoint['dropout'],
-            bidirectional=checkpoint['bidirectional']
-        )
-        
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model = model.to(device)
+    def save_model(self, path: str) -> None:
+        torch.save({
+            'state_dict': self.state_dict(),
+            'config': {
+                'vocab_size'   : self.embedding.num_embeddings,
+                'embedding_dim': self.embedding.embedding_dim,
+                'hidden_dim'   : self.hidden_dim,
+                'num_layers'   : self.num_layers,
+                'pad_idx'      : self.pad_idx,
+            }
+        }, path)
+        print(f"✅ Sentiment model saved → {path}")
+
+    @classmethod
+    def load_model(cls, path: str, device: str = 'cpu') -> 'SentimentLSTM':
+        data  = torch.load(path, map_location=device)
+        model = cls(**data['config'])
+        model.load_state_dict(data['state_dict'])
         model.eval()
-        
         return model

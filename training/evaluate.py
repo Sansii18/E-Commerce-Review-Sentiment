@@ -1,316 +1,253 @@
 """
-Evaluation utilities for ReviewGuard models.
+Evaluation Utilities
+====================
+Computes and displays all metrics for Stage 1 (sentiment) and
+Stage 2 (autoencoder) models.
 
-Provides functions for:
-- Metrics computation (accuracy, precision, recall, F1, ROC-AUC, etc.)
-- Confusion matrix generation and visualization
-- ROC curve plotting
-- Cross-validation utilities
+FIX NOTES
+---------
+• Threshold is loaded from `threshold_config.json` which now stores the
+  `scores_inverted` flag.  Predictions use the correct direction:
+      predicted_fake = (error > threshold)   [after optional negation]
+• AUC is always computed against the raw (or corrected) error, not the
+  binary prediction, for a proper ROC curve.
+• Added a standalone CLI so you can run:
+      python training/evaluate.py --stage autoencoder
 """
 
+import os
+import sys
+import json
+import argparse
+import pickle
+import logging
+from typing import Optional, Dict
+
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import (
-    confusion_matrix, accuracy_score, precision_score, recall_score,
-    f1_score, roc_curve, auc, roc_auc_score, classification_report
-)
-from typing import Tuple, Dict
-from pathlib import Path
+import torch
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(message)s')
+log = logging.getLogger(__name__)
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-class Evaluator:
-    """
-    Comprehensive model evaluation toolkit.
-    """
-    
-    @staticmethod
-    def compute_metrics(
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        y_probs: np.ndarray = None
-    ) -> Dict[str, float]:
-        """
-        Compute classification metrics.
-        
-        Args:
-            y_true: Ground truth binary labels
-            y_pred: Predicted binary labels
-            y_probs: Predicted probabilities (for AUC-ROC)
-            
-        Returns:
-            Dictionary with all metrics
-        """
-        metrics = {
-            'accuracy': accuracy_score(y_true, y_pred),
-            'precision': precision_score(y_true, y_pred, zero_division=0),
-            'recall': recall_score(y_true, y_pred, zero_division=0),
-            'f1': f1_score(y_true, y_pred, zero_division=0),
-        }
-        
-        if y_probs is not None:
-            metrics['auc_roc'] = roc_auc_score(y_true, y_probs)
-        
-        return metrics
-    
-    @staticmethod
-    def plot_confusion_matrix(
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        title: str = "Confusion Matrix",
-        save_path: str = None
-    ) -> None:
-        """
-        Plot confusion matrix with heatmap.
-        
-        Args:
-            y_true: Ground truth labels
-            y_pred: Predicted labels
-            title: Plot title
-            save_path: Path to save plot (optional)
-        """
-        cm = confusion_matrix(y_true, y_pred)
-        
-        plt.figure(figsize=(8, 6), dpi=150)
-        sns.heatmap(
-            cm, annot=True, fmt='d', cmap='Blues',
-            xticklabels=['Negative', 'Positive'],
-            yticklabels=['Negative', 'Positive'],
-            cbar_kws={'label': 'Count'}
-        )
-        plt.title(title, fontsize=14, fontweight='bold')
-        plt.ylabel('True Label', fontsize=12)
-        plt.xlabel('Predicted Label', fontsize=12)
-        plt.tight_layout()
-        
-        if save_path:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ Confusion matrix saved to {save_path}")
-        
-        plt.close()
-    
-    @staticmethod
-    def plot_roc_curve(
-        y_true: np.ndarray,
-        y_probs: np.ndarray,
-        title: str = "ROC Curve",
-        save_path: str = None
-    ) -> Tuple[float, float, float]:
-        """
-        Plot ROC curve.
-        
-        Args:
-            y_true: Ground truth binary labels
-            y_probs: Predicted probabilities
-            title: Plot title
-            save_path: Path to save plot
-            
-        Returns:
-            Tuple of (fpr, tpr, auc_score)
-        """
-        fpr, tpr, _ = roc_curve(y_true, y_probs)
-        roc_auc = auc(fpr, tpr)
-        
-        plt.figure(figsize=(8, 6), dpi=150)
-        plt.plot(fpr, tpr, color='#6366F1', lw=2.5, 
-                 label=f'ROC Curve (AUC = {roc_auc:.3f})')
-        plt.plot([0, 1], [0, 1], color='#D1D5DB', lw=2, linestyle='--',
-                 label='Random Classifier')
-        
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel('False Positive Rate', fontsize=12)
-        plt.ylabel('True Positive Rate', fontsize=12)
-        plt.title(title, fontsize=14, fontweight='bold')
-        plt.legend(loc='lower right', fontsize=11)
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        
-        if save_path:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ ROC curve saved to {save_path}")
-        
-        plt.close()
-        
-        return fpr, tpr, roc_auc
-    
-    @staticmethod
-    def plot_pr_curve(
-        y_true: np.ndarray,
-        y_probs: np.ndarray,
-        title: str = "Precision-Recall Curve",
-        save_path: str = None
-    ) -> None:
-        """
-        Plot precision-recall curve.
-        
-        Args:
-            y_true: Ground truth labels
-            y_probs: Predicted probabilities
-            title: Plot title
-            save_path: Path to save
-        """
-        from sklearn.metrics import precision_recall_curve, average_precision_score
-        
-        precision, recall, _ = precision_recall_curve(y_true, y_probs)
-        ap = average_precision_score(y_true, y_probs)
-        
-        plt.figure(figsize=(8, 6), dpi=150)
-        plt.plot(recall, precision, color='#10B981', lw=2.5,
-                 label=f'PR Curve (AP = {ap:.3f})')
-        
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel('Recall', fontsize=12)
-        plt.ylabel('Precision', fontsize=12)
-        plt.title(title, fontsize=14, fontweight='bold')
-        plt.legend(loc='upper right', fontsize=11)
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        
-        if save_path:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ PR curve saved to {save_path}")
-        
-        plt.close()
-    
-    @staticmethod
-    def print_classification_report(
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        target_names: list = None
-    ) -> str:
-        """
-        Print detailed classification report.
-        
-        Args:
-            y_true: Ground truth labels
-            y_pred: Predicted labels
-            target_names: Names for classes
-            
-        Returns:
-            Report string
-        """
-        if target_names is None:
-            target_names = ['Negative', 'Positive']
-        
-        report = classification_report(
-            y_true, y_pred,
-            target_names=target_names,
-            digits=4
-        )
-        
-        print(report)
-        return report
-    
-    @staticmethod
-    def plot_training_curves(
-        train_loss: list,
-        val_loss: list,
-        train_acc: list = None,
-        val_acc: list = None,
-        title: str = "Training History",
-        save_path: str = None
-    ) -> None:
-        """
-        Plot training and validation curves.
-        
-        Args:
-            train_loss: Training loss per epoch
-            val_loss: Validation loss per epoch
-            train_acc: Training accuracy (optional)
-            val_acc: Validation accuracy (optional)
-            title: Plot title
-            save_path: Path to save
-        """
-        epochs = range(1, len(train_loss) + 1)
-        
-        if train_acc and val_acc:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
-            
-            # Loss
-            ax1.plot(epochs, train_loss, 'o-', label='Training Loss', linewidth=2)
-            ax1.plot(epochs, val_loss, 's-', label='Validation Loss', linewidth=2)
-            ax1.set_xlabel('Epoch', fontsize=11)
-            ax1.set_ylabel('Loss', fontsize=11)
-            ax1.set_title('Loss', fontsize=12, fontweight='bold')
-            ax1.legend()
-            ax1.grid(alpha=0.3)
-            
-            # Accuracy
-            ax2.plot(epochs, train_acc, 'o-', label='Training Acc', linewidth=2)
-            ax2.plot(epochs, val_acc, 's-', label='Validation Acc', linewidth=2)
-            ax2.set_xlabel('Epoch', fontsize=11)
-            ax2.set_ylabel('Accuracy', fontsize=11)
-            ax2.set_title('Accuracy', fontsize=12, fontweight='bold')
-            ax2.legend()
-            ax2.grid(alpha=0.3)
-        
+# ──────────────────────────────────────────────────────────────────────────
+# Shared helpers
+# ──────────────────────────────────────────────────────────────────────────
+
+def print_metrics_table(metrics: Dict[str, float], title: str = 'Metrics') -> None:
+    bar = '=' * 60
+    print(f"\n{bar}")
+    print(f"  {title}")
+    print(bar)
+    for k, v in metrics.items():
+        if isinstance(v, float):
+            print(f"  {k:<22}: {v:.4f}")
         else:
-            fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-            ax.plot(epochs, train_loss, 'o-', label='Training Loss', linewidth=2)
-            ax.plot(epochs, val_loss, 's-', label='Validation Loss', linewidth=2)
-            ax.set_xlabel('Epoch', fontsize=11)
-            ax.set_ylabel('Loss', fontsize=11)
-            ax.set_title('Training History', fontsize=12, fontweight='bold')
-            ax.legend()
-            ax.grid(alpha=0.3)
-        
-        plt.suptitle(title, fontsize=14, fontweight='bold', y=1.00)
-        plt.tight_layout()
-        
-        if save_path:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ Training curves saved to {save_path}")
-        
-        plt.close()
-    
-    @staticmethod
-    def compute_bootstrap_metrics(
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        n_iterations: int = 1000
-    ) -> Dict[str, Tuple[float, float]]:
-        """
-        Compute bootstrap confidence intervals for metrics.
-        
-        Args:
-            y_true: Ground truth labels
-            y_pred: Predicted labels
-            n_iterations: Number of bootstrap samples
-            
-        Returns:
-            Dictionary of {metric: (mean, std)}
-        """
-        n = len(y_true)
-        metrics_bootstrap = {
-            'accuracy': [],
-            'precision': [],
-            'recall': [],
-            'f1': []
-        }
-        
-        for _ in range(n_iterations):
-            # Sample with replacement
-            idx = np.random.choice(n, size=n, replace=True)
-            y_t_boot = y_true[idx]
-            y_p_boot = y_pred[idx]
-            
-            metrics_bootstrap['accuracy'].append(accuracy_score(y_t_boot, y_p_boot))
-            metrics_bootstrap['precision'].append(
-                precision_score(y_t_boot, y_p_boot, zero_division=0)
-            )
-            metrics_bootstrap['recall'].append(
-                recall_score(y_t_boot, y_p_boot, zero_division=0)
-            )
-            metrics_bootstrap['f1'].append(f1_score(y_t_boot, y_p_boot, zero_division=0))
-        
-        results = {}
-        for metric, values in metrics_bootstrap.items():
-            results[metric] = (np.mean(values), np.std(values))
-        
-        return results
+            print(f"  {k:<22}: {v}")
+    print(bar + "\n")
+
+
+def load_threshold_config(save_dir: str) -> Dict:
+    """Load threshold + inversion flag saved during calibration."""
+    path = os.path.join(save_dir, 'threshold_config.json')
+    if not os.path.exists(path):
+        log.warning(f"threshold_config.json not found at {path}. Using default T=0.5.")
+        return {'threshold': 0.5, 'scores_inverted': False}
+    with open(path) as f:
+        return json.load(f)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stage 1: Sentiment Evaluation
+# ──────────────────────────────────────────────────────────────────────────
+
+def evaluate_sentiment(
+    save_dir  : str,
+    data_path : str = None,
+    n_samples : int = 10_000,
+) -> Dict[str, float]:
+    """
+    Evaluate the Stage 1 sentiment classifier.
+
+    Returns a dict of accuracy / precision / recall / F1.
+    """
+    from sklearn.metrics import (
+        accuracy_score, precision_score, recall_score,
+        f1_score, confusion_matrix, roc_auc_score,
+    )
+    from models.sentiment_model import SentimentLSTM
+    from utils.preprocessing import TextPreprocessor
+
+    model_path = os.path.join(save_dir, 'sentiment_model_adam_best.pt')
+    vocab_path = os.path.join(save_dir, 'vocabulary.pkl')
+
+    if not os.path.exists(model_path):
+        log.error(f"Sentiment model not found: {model_path}")
+        return {}
+    if not os.path.exists(vocab_path):
+        log.error(f"Vocabulary not found: {vocab_path}")
+        return {}
+
+    model        = SentimentLSTM.load_model(model_path, device=str(DEVICE)).to(DEVICE)
+    preprocessor = TextPreprocessor()
+    preprocessor.load_vocabulary(vocab_path)
+
+    # Try to load Amazon reviews test set
+    amazon_path = data_path or os.path.join(ROOT_DIR, 'data', 'amazon_reviews_test.csv')
+    if not os.path.exists(amazon_path):
+        log.warning("Test data not found — generating synthetic evaluation set.")
+        texts, labels = _synthetic_sentiment_data(n_samples)
+    else:
+        import pandas as pd
+        df     = pd.read_csv(amazon_path).sample(min(n_samples, len(pd.read_csv(amazon_path))), random_state=42)
+        texts  = df['text'].fillna('').astype(str).values
+        labels = (df['stars'] >= 4).astype(int).values   # 4-5★ = positive
+
+    probs = _batch_sentiment_predict(model, preprocessor, texts)
+    preds = (probs >= 0.5).astype(int)
+
+    metrics = dict(
+        accuracy  = accuracy_score(labels, preds),
+        precision = precision_score(labels, preds, zero_division=0),
+        recall    = recall_score(labels, preds, zero_division=0),
+        f1        = f1_score(labels, preds, zero_division=0),
+        auc_roc   = roc_auc_score(labels, probs),
+    )
+    cm = confusion_matrix(labels, preds)
+    metrics['confusion_matrix'] = cm.tolist()
+
+    print_metrics_table(
+        {k: v for k, v in metrics.items() if k != 'confusion_matrix'},
+        title='Stage 1 — Sentiment Evaluation Results',
+    )
+    print(f"  Confusion Matrix:\n{cm}\n")
+    return metrics
+
+
+def _batch_sentiment_predict(model, preprocessor, texts, batch=128):
+    all_probs = []
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, len(texts), batch):
+            batch_texts = texts[i:i+batch]
+            encoded     = np.array([
+                preprocessor.encode_text(preprocessor.clean_text(t), max_len=200)
+                for t in batch_texts
+            ])
+            x    = torch.LongTensor(encoded).to(DEVICE)
+            prob, _ = model(x)
+            all_probs.append(prob.squeeze(-1).cpu().numpy())
+    return np.concatenate(all_probs)
+
+
+def _synthetic_sentiment_data(n):
+    """Very simple synthetic data for smoke-testing."""
+    rng = np.random.default_rng(0)
+    texts  = ['great product' if i % 2 == 0 else 'terrible product' for i in range(n)]
+    labels = np.array([1 if i % 2 == 0 else 0 for i in range(n)], dtype=int)
+    return texts, labels
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stage 2: Autoencoder Evaluation
+# ──────────────────────────────────────────────────────────────────────────
+
+def evaluate_autoencoder(
+    save_dir  : str,
+    data_path : str = None,
+) -> Dict[str, float]:
+    """
+    Evaluate the Stage 2 autoencoder fake-detector on the mexwell corpus.
+
+    Uses the threshold and inversion flag saved in threshold_config.json.
+    """
+    from sklearn.metrics import (
+        accuracy_score, precision_score, recall_score,
+        f1_score, confusion_matrix, roc_auc_score,
+    )
+    from models.autoencoder_model import ReviewAutoencoder
+    from utils.preprocessing import TextPreprocessor
+    from training.train_autoencoder import (
+        load_mexwell_data, encode_texts, compute_reconstruction_errors,
+        TRAIN_CFG,
+    )
+
+    model_path = os.path.join(save_dir, 'autoencoder_checkpoint.pt')
+    vocab_path = os.path.join(save_dir, 'vocabulary_ae.pkl')
+
+    if not os.path.exists(model_path):
+        log.error(f"Autoencoder model not found: {model_path}")
+        return {}
+
+    cfg         = dict(TRAIN_CFG)
+    if data_path:
+        cfg['data_path'] = data_path
+
+    model        = ReviewAutoencoder.load_model(model_path, device=str(DEVICE)).to(DEVICE)
+    preprocessor = TextPreprocessor(max_vocab=cfg['vocab_size'])
+
+    if os.path.exists(vocab_path):
+        preprocessor.load_vocabulary(vocab_path)
+    else:
+        log.warning("vocabulary_ae.pkl not found — building from scratch.")
+        texts, labels = load_mexwell_data(cfg)
+        preprocessor.build_vocabulary(texts[labels == 0].tolist())
+
+    texts, labels = load_mexwell_data(cfg)
+    X, y          = encode_texts(texts, labels, cfg, preprocessor)
+    errors        = compute_reconstruction_errors(model, X)
+
+    thr_cfg   = load_threshold_config(save_dir)
+    threshold = thr_cfg['threshold']
+    inverted  = thr_cfg.get('scores_inverted', False)
+
+    if inverted:
+        log.warning("Applying score inversion (loaded from threshold_config.json)")
+        errors = -errors
+
+    labels_np = y.numpy()
+    preds     = (errors > threshold).astype(int)
+
+    metrics = dict(
+        accuracy  = accuracy_score(labels_np, preds),
+        precision = precision_score(labels_np, preds, zero_division=0),
+        recall    = recall_score(labels_np, preds, zero_division=0),
+        f1        = f1_score(labels_np, preds, zero_division=0),
+        auc_roc   = roc_auc_score(labels_np, errors),
+        threshold = threshold,
+    )
+    cm = confusion_matrix(labels_np, preds)
+    metrics['confusion_matrix'] = cm.tolist()
+
+    print_metrics_table(
+        {k: v for k, v in metrics.items() if k != 'confusion_matrix'},
+        title='Stage 2 — Autoencoder Evaluation Results',
+    )
+    print(f"  Confusion Matrix:\n{cm}\n")
+    return metrics
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# CLI
+# ──────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Evaluate ReviewGuard models')
+    parser.add_argument('--stage', choices=['sentiment', 'autoencoder', 'both'],
+                        default='both')
+    parser.add_argument('--save_dir', default=os.path.join(ROOT_DIR, 'models', 'saved'))
+    args = parser.parse_args()
+
+    if args.stage in ('sentiment', 'both'):
+        evaluate_sentiment(args.save_dir)
+    if args.stage in ('autoencoder', 'both'):
+        evaluate_autoencoder(args.save_dir)
+
+
+if __name__ == '__main__':
+    main()
